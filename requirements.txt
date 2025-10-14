@@ -1,3 +1,3 @@
-pyrogram==2.2.26
+pyrogram
 tgcrypto
-pymongo==4.7.0
+pymongo
