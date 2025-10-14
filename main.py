@@ -105,6 +105,9 @@ async def video_handler(c: Client, m: Message):
             caption="🎬 Here's your video with the applied thumbnail!",
             supports_streaming=True
         )
+        # ✅ Step 3: Clean up local file
+        if thumb_path and os.path.exists(thumb_path):
+        os.remove(thumb_path)
         return
     except Exception:
         # fallback: download and reupload
