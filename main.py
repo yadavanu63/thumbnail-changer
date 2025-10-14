@@ -95,13 +95,18 @@ async def video_handler(c: Client, m: Message):
         await m.reply_text("You don't have a saved thumbnail. Send a photo first.")
         return
 
+    import tempfile
     try:
         thumb_file_id = row["file_id"]
-        thumb_path = await c.download_media(thumb_file_id)  # ✅ await added
+        # Step 1: Create temp directory
+        with tempfile.TemporaryDirectory() as tmpdir:
+        thumb_path = os.path.join(tmpdir, "thumb.jpg")
+
+        # Step 2: Actually download the thumbnail to local file
+        downloaded_path = await c.download_media(thumb_file_id, file_name=thumb_path)
         # Convert to JPG to make Telegram accept it
-        jpg_path = os.path.splitext(thumb_path)[0] + ".jpg"
-        Image.open(thumb_path).convert("RGB").save(jpg_path, "JPEG", quality=90)
-        os.remove(thumb_path)  # remove old file
+        jpg_path = os.path.splitext(downloaded_path)[0] + ".jpg"
+        Image.open(downloaded_path).convert("RGB").save(jpg_path, "JPEG", quality=90)
         # Step 3: Ensure size < 200 KB
         if os.path.getsize(jpg_path) > 200 * 1024:
             Image.open(jpg_path).save(jpg_path, "JPEG", quality=80)
