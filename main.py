@@ -94,9 +94,11 @@ async def video_handler(c: Client, m: Message):
         await m.reply_text("You don't have a saved thumbnail. Send a photo first.")
         return
 
-    thumb_file_id = row["file_id"]
-
     try:
+        thumb_file_id = row["file_id"]
+        thumb_path = await
+    c.download_media(thum_file_id)
+    
         await c.send_video(
             chat_id=m.chat.id,
             video=video_file_id,
