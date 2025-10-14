@@ -96,8 +96,7 @@ async def video_handler(c: Client, m: Message):
 
     try:
         thumb_file_id = row["file_id"]
-        thumb_path = await
-    c.download_media(thum_file_id)
+        thumb_path = await c.download_media(thumb_file_id)  # ✅ await added
     
         await c.send_video(
             chat_id=m.chat.id,
