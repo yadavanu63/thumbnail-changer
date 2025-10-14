@@ -97,17 +97,21 @@ async def video_handler(c: Client, m: Message):
     try:
         thumb_file_id = row["file_id"]
         thumb_path = await c.download_media(thumb_file_id)  # ✅ await added
+        # Convert to JPG to make Telegram accept it
+        jpg_path = os.path.splitext(thumb_path)[0] + ".jpg"
+        Image.open(thumb_path).convert("RGB").save(jpg_path, "JPEG", quality=90)
+        os.remove(thumb_path)  # remove old file
     
         await c.send_video(
             chat_id=m.chat.id,
             video=video_file_id,
-            thumb=thumb_file_id,
+            thumb=jpg_path,
             caption="🎬 Here's your video with the applied thumbnail!",
             supports_streaming=True
         )
         # ✅ Step 3: Clean up local file
-        if thumb_path and os.path.exists(thumb_path):
-            os.remove(thumb_path)
+        if os.path.exists(jpg_path):
+            os.remove(jpg_path)
         return
     except Exception:
         # fallback: download and reupload
