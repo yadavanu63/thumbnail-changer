@@ -72,13 +72,8 @@ async def delete_cover(c: Client, m: Message):
 
 @app.on_message(filters.private & filters.photo)
 async def photo_handler(c: Client, m: Message):
-    # pick largest size
-    photo_sizes = m.photo
-    if not photo_sizes:
-        await m.reply_text("Couldn't read that photo. Try again.")
-        return
-    best = photo_sizes[-1]
-    file_id = best.file_id
+    # Pyrogram v2: m.photo is now a single Photo object (not a list)
+    file_id = m.photo.file_id
     save_thumb_fileid(m.from_user.id, file_id)
     await m.reply_text("✅ Cover/Thumbnail saved successfully.")
 
