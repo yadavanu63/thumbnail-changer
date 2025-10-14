@@ -102,6 +102,10 @@ async def video_handler(c: Client, m: Message):
         jpg_path = os.path.splitext(thumb_path)[0] + ".jpg"
         Image.open(thumb_path).convert("RGB").save(jpg_path, "JPEG", quality=90)
         os.remove(thumb_path)  # remove old file
+
+        # Step 3: Ensure size < 200 KB
+        if os.path.getsize(jpg_path) > 200 * 1024:
+        Image.open(jpg_path).save(jpg_path, "JPEG", quality=80)
     
         await c.send_video(
             chat_id=m.chat.id,
@@ -110,16 +114,17 @@ async def video_handler(c: Client, m: Message):
             caption="🎬 Here's your video with the applied thumbnail!",
             supports_streaming=True
         )
+        await m.reply_text("✅ Video sent successfully with custom thumbnail!")
         # ✅ Step 3: Clean up local file
         if os.path.exists(jpg_path):
             os.remove(jpg_path)
         return
-    except Exception:
+    except Exception as e:
         # fallback: download and reupload
-        await m.reply_text("Direct send failed — trying fallback (will take longer)...")
-        tmp_path = None
+        await m.reply_text(f"⚠️ Direct send failed — {e}\nTrying fallback (will take longer)...")
+        # Fallback (reupload the video)
+        tmp_path = await c.download_media(m)
         try:
-            tmp_path = await c.download_media(m)
             await c.send_video(
                 chat_id=m.chat.id,
                 video=tmp_path,
