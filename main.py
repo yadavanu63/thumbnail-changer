@@ -103,8 +103,8 @@ async def video_handler(c: Client, m: Message):
         Image.open(thumb_path).convert("RGB").save(jpg_path, "JPEG", quality=90)
         os.remove(thumb_path)  # remove old file
         # Step 3: Ensure size < 200 KB
-            if os.path.getsize(jpg_path) > 200 * 1024:
-            Image.open(jpg_path).save(jpg_path, "JPEG", quality=80)
+    if os.path.getsize(jpg_path) > 200 * 1024:
+        Image.open(jpg_path).save(jpg_path, "JPEG", quality=80)
     
         await c.send_video(
             chat_id=m.chat.id,
