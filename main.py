@@ -100,7 +100,7 @@ async def video_handler(c: Client, m: Message):
         thumb_file_id = row["file_id"]
         # Step 1: Create temp directory
         with tempfile.TemporaryDirectory() as tmpdir:
-        thumb_path = os.path.join(tmpdir, "thumb.jpg")
+            thumb_path = os.path.join(tmpdir, "thumb.jpg")
 
         # Step 2: Actually download the thumbnail to local file
         downloaded_path = await c.download_media(thumb_file_id, file_name=thumb_path)
