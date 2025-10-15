@@ -176,6 +176,6 @@ def cleanup_temp():
     except:
         pass
 
-if name == "main":
+if name == "__main__":
     print("Bot starting...")
     app.run()
