@@ -1,147 +1,182 @@
-from PIL import Image
 import os
-from datetime import datetime
-
+import asyncio
+from pathlib import Path
+from PIL import Image
 from pyrogram import Client, filters
-from pyrogram.types import Message
-from pymongo import MongoClient
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
-# Environment variables
+# --- CONFIG: use env vars (set these in Heroku Config Vars) ---
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-MONGO_URI = os.getenv("MONGO_URI", "")
-DB_NAME = os.getenv("DB_NAME", "thumbnail_bot")
 
-if not (API_ID and API_HASH and BOT_TOKEN and MONGO_URI):
-    raise RuntimeError("Missing one of required env vars: API_ID, API_HASH, BOT_TOKEN, MONGO_URI")
+# --- Client ---
+app = Client("thumb_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-app = Client("video_thumbnail_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# temp storage dir
+TMP_DIR = Path("./tmp")
+TMP_DIR.mkdir(exist_ok=True)
 
-# Mongo client & collection
-mongo = MongoClient(MONGO_URI)
-db = mongo[DB_NAME]
-thumbs = db.thumbnails
-thumbs.create_index("user_id", unique=True)
+# per-user thumbnail state: user_id -> {"path": str}
+thumbs = {}
 
-def save_thumb_fileid(user_id: int, file_id: str):
-    thumbs.update_one(
-        {"user_id": user_id},
-        {"$set": {"file_id": file_id, "saved_at": datetime.utcnow()}},
-        upsert=True
-    )
+START_TEXT = """Hi {name} 👋
+Send me a photo first (this will be used as thumbnail), then send the video/file and I'll apply it as the video's thumbnail — I will keep the original caption unchanged.
+"""
 
-def get_thumb(user_id: int):
-    return thumbs.find_one({"user_id": user_id})
+START_BUTTON = InlineKeyboardMarkup(
+    [[InlineKeyboardButton("Source (example)", url="https://github.com/soebb/thumb-change-bot")]]
+)
 
-def del_thumb(user_id: int):
-    res = thumbs.delete_one({"user_id": user_id})
-    return res.deleted_count
-
-@app.on_message(filters.private & filters.command("start"))
-async def start_cmd(c: Client, m: Message):
-    txt = (
-        f"Hi {m.from_user.first_name}!\n\n"
-        "Welcome to 🎬 VideoThumbnailBot.\n\n"
-        "How it works:\n"
-        "1. Send a photo to set it as your thumbnail.\n"
-        "2. Send a video and the bot will resend it with your saved thumbnail.\n\n"
-        "Commands:\n"
-        "/show_cover - View your saved thumbnail\n"
-        "/del_cover - Delete your saved thumbnail"
-    )
-    await m.reply_text(txt)
-
-@app.on_message(filters.private & filters.command("show_cover"))
-async def show_cover(c: Client, m: Message):
-    row = get_thumb(m.from_user.id)
-    if not row:
-        await m.reply_text("You don't have a saved cover. Send a photo to save one.")
-        return
+# helper: convert image to JPG and ensure size < 200 KB
+def prepare_thumb(in_path: Path) -> Path:
+    # convert to jpg path
+    jpg_path = in_path.with_suffix(".jpg")
+    img = Image.open(in_path).convert("RGB")
+    # Save with initial quality
+    quality = 90
+    img.save(jpg_path, "JPEG", quality=quality)
+    # reduce until <200 KB (Telegram requires <= 200 KB for video thumbnails)
+    max_bytes = 200 * 1024
+    while jpg_path.stat().st_size > max_bytes and quality > 20:
+        quality -= 10
+        img.save(jpg_path, "JPEG", quality=quality)
+    # remove source if different
     try:
-        await c.send_photo(m.chat.id, row["file_id"], caption="🖼️ Your saved thumbnail")
+        if in_path.exists() and in_path != jpg_path:
+            in_path.unlink(missing_ok=True)
     except Exception:
-        await m.reply_text("Couldn't send your saved thumbnail. Try sending a new one.")
+        pass
+    return jpg_path
 
-@app.on_message(filters.private & filters.command("del_cover"))
-async def delete_cover(c: Client, m: Message):
-    removed = del_thumb(m.from_user.id)
-    if removed:
-        await m.reply_text("✅ Thumbnail deleted.")
-    else:
-        await m.reply_text("No thumbnail found.")
+# cleanup helper
+async def safe_remove(path: Path):
+    try:
+        if path and path.exists():
+            path.unlink()
+    except Exception:
+        pass
 
+# /start or /thumb
+@app.on_message(filters.private & filters.command(["start", "thumb"]))
+async def cmd_start(c: Client, m: Message):
+    text = START_TEXT.format(name=m.from_user.first_name or "there")
+    await m.reply_text(text, reply_markup=START_BUTTON)
+
+# handle photos (thumbnail from user)
 @app.on_message(filters.private & filters.photo)
 async def photo_handler(c: Client, m: Message):
-    # Pyrogram v2: m.photo is now a single Photo object (not a list)
-    file_id = m.photo.file_id
-    save_thumb_fileid(m.from_user.id, file_id)
-    await m.reply_text("✅ Cover/Thumbnail saved successfully.")
+    user_id = m.from_user.id
+    msg = await m.reply_text("✅ Received photo. Saving thumbnail...")
+    # download photo
+    path = await c.download_media(m.photo, file_name=str(TMP_DIR / f"{user_id}_thumb"))
+    if not path:
+        await msg.edit("❌ Failed to download photo. Try again.")
+        return
+    # convert/prepare
+    jpg_path = prepare_thumb(Path(path))
+    # store
+    thumbs[user_id] = {"path": str(jpg_path)}
+    await msg.edit("✅ Thumbnail saved. Now send the video/file and I'll apply it.")
 
+# handle videos/documents
 @app.on_message(filters.private & (filters.video | filters.document))
 async def video_handler(c: Client, m: Message):
-    vid = None
-    if m.video:
-        vid = m.video
-        video_file_id = vid.file_id
-    elif m.document and m.document.mime_type and m.document.mime_type.startswith("video"):
-        vid = m.document
-        video_file_id = vid.file_id
-    else:
-        return
+    user_id = m.from_user.id
 
-    row = get_thumb(m.from_user.id)
-    if not row:
+    # check if user has a saved thumb
+    info = thumbs.get(user_id)
+    if not info or not info.get("path"):
         await m.reply_text("You don't have a saved thumbnail. Send a photo first.")
         return
 
-    import tempfile
+    thumb_path = Path(info["path"])
+    # Ensure thumb file exists
+    if not thumb_path.exists():
+        await m.reply_text("Thumbnail file not found on server. Please resend the photo.")
+        thumbs.pop(user_id, None)
+        return
+
+    status = await m.reply_text("🔁 Applying thumbnail — please wait...")
+
+    # get video meta
+    video_obj = m.video if m.video else m.document
+    video_caption = m.caption if m.caption else None
+
+    # Try fast/direct send: send video by file_id but with local thumb path
     try:
-        thumb_file_id = row["file_id"]
-        # Step 1: Create temp directory
-        with tempfile.TemporaryDirectory() as tmpdir:
-            thumb_path = os.path.join(tmpdir, "thumb.jpg")
-        # Step 2: Actually download the thumbnail to local file
-        downloaded_path = await c.download_media(thumb_file_id, file_name=thumb_path)
-        # Convert to JPG to make Telegram accept it
-        jpg_path = os.path.splitext(downloaded_path)[0] + ".jpg"
-        Image.open(downloaded_path).convert("RGB").save(jpg_path, "JPEG", quality=90)
-        # Step 3: Ensure size < 200 KB
-        if os.path.getsize(jpg_path) > 200 * 1024:
-            Image.open(jpg_path).save(jpg_path, "JPEG", quality=80)
-    
+        # Pyrogram will accept video=file_id and thumb=local_path
         await c.send_video(
             chat_id=m.chat.id,
-            video=video_file_id,
-            thumb=jpg_path,
-            caption="🎬 Here's your video with the applied thumbnail!",
+            video=video_obj.file_id,
+            thumb=str(thumb_path),
+            caption=video_caption,
             supports_streaming=True
         )
-        await m.reply_text("✅ Video sent successfully with custom thumbnail!")
-        # ✅ Step 3: Clean up local file
-        if os.path.exists(jpg_path):
-            os.remove(jpg_path)
+        await status.edit("✅ Video sent successfully with custom thumbnail!")
+        # cleanup thumbnail: keep for next use (user may want to reuse). If you want one-time use, remove it here.
         return
     except Exception as e:
-        # fallback: download and reupload
-        await m.reply_text(f"⚠️ Direct send failed — {e}\nTrying fallback (will take longer)...")
-        # Fallback (reupload the video)
-        tmp_path = await c.download_media(m)
+        # Direct method failed — fallback to download+reupload
+        await status.edit(f"Direct send failed — trying fallback (may take longer)...")
         try:
+            # download video to temp
+            video_tmp = Path(await c.download_media(m, file_name=str(TMP_DIR / f"{user_id}_video")))
+            # send by local paths
             await c.send_video(
                 chat_id=m.chat.id,
-                video=tmp_path,
-                thumb=thumb_file_id,
-                caption="🎬 Here's your video with the applied thumbnail!",
+                video=str(video_tmp),
+                thumb=str(thumb_path),
+                caption=video_caption,
                 supports_streaming=True
             )
+            await status.edit("✅ Video sent successfully with custom thumbnail!")
+        except Exception as e2:
+            await status.edit("❌ Failed to send video with thumbnail. Try smaller files or resend.")
         finally:
+            # cleanup downloaded video
             try:
-                if tmp_path and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except:
+                if 'video_tmp' in locals() and video_tmp.exists():
+                    await safe_remove(video_tmp)
+            except Exception:
                 pass
 
-if __name__ == '__main__':
+# optional: delete thumb command
+@app.on_message(filters.private & filters.command("del_cover"))
+async def del_cover_cmd(c: Client, m: Message):
+    user_id = m.from_user.id
+    info = thumbs.pop(user_id, None)
+    if info and info.get("path"):
+        try:
+            await safe_remove(Path(info["path"]))
+        except:
+            pass
+        await m.reply_text("✅ Your saved thumbnail was deleted.")
+    else:
+        await m.reply_text("You have no saved thumbnail.")
+
+# optional: show cover
+@app.on_message(filters.private & filters.command("show_cover"))
+async def show_cover_cmd(c: Client, m: Message):
+    user_id = m.from_user.id
+    info = thumbs.get(user_id)
+    if not info or not info.get("path") or not Path(info["path"]).exists():
+        await m.reply_text("You don't have a saved cover.")
+        return
+    await c.send_photo(m.chat.id, info["path"], caption="🖼️ Your saved cover")
+
+# cleanup all tmp files on shutdown (best-effort)
+@app.on_closed()
+def on_closed(client):
+    try:
+        for p in TMP_DIR.glob("*"):
+            try:
+                p.unlink()
+            except:
+                pass
+    except:
+        pass
+
+if name == "main":
     print("Bot starting...")
     app.run()
