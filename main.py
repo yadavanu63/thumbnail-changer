@@ -166,7 +166,7 @@ async def show_cover_cmd(c: Client, m: Message):
     await c.send_photo(m.chat.id, info["path"], caption="🖼️ Your saved cover")
 
 # cleanup all tmp files on shutdown (best-effort)
-def cleanup_temp()
+def cleanup_temp():
     try:
         for p in TMP_DIR.glob("*"):
             try:
